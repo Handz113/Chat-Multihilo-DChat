@@ -4,7 +4,7 @@ import json
 import hashlib
 import os
 import ssl
-import requests  # [NUEVO] Necesario para la IA
+import requests
 from datetime import datetime
 
 # --- Configuración Inicial ---
@@ -13,7 +13,6 @@ historial_file = "historial.json"
 pines_file = "pines.json"
 salas_file = "salas.json"
 
-# Configuración de OLLAMA [NUEVO]
 OLLAMA_URL = "http://localhost:11434/api/generate"
 MODELO_IA = "llama3.2:3b"
 
