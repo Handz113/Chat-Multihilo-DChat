@@ -16,3 +16,8 @@ Para la ejecución, el servidor requiere los archivos server.crt y server.key en
 
 
 Para tender un direccionamiento correcto, en 'Host 0.0.3.py' y en 'network_manager.py' se debe cambiar la dirección IPv4 a la dirección deseada, siendo el archivo Host el servidor y el network_manager el cliente, ambos deben tener la misma dirección IPv4.
+
+
+-- IA --
+
+Mantener el servicio Ollama activo antes de iniciar el servidor
