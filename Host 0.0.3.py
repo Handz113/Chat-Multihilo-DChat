@@ -13,7 +13,7 @@ historial_file = "historial.json"
 pines_file = "pines.json"
 salas_file = "salas.json"
 
-# Configuración de OLLAMA [NUEVO]
+
 OLLAMA_URL = "http://localhost:11434/api/generate"
 MODELO_IA = "llama3.2:3b"
 
@@ -85,7 +85,7 @@ def enviar_historial_a_usuario(conn, sala):
     for m in msgs: enviar_privado(conn, m)
     enviar_privado(conn, "--------------------------------\n")
 
-# --- [NUEVO] LÓGICA DE INTELIGENCIA ARTIFICIAL ---
+# --- LÓGICA DE INTELIGENCIA ARTIFICIAL ---
 def generar_resumen_ollama(sala):
     """Lee el historial y solicita un resumen a Llama 3.2"""
     hist = cargar_historial()
@@ -211,7 +211,7 @@ def procesar_comando(conn, mensaje, alias, rol, sala_actual):
     es_staff = (rol == "admin" or rol == "docente")
     es_admin = (rol == "admin")
 
-    # [NUEVO] COMANDO IA /resume
+    # COMANDO IA /resume
     if comando == "/resume":
         enviar_privado(conn, "🤖 La IA está leyendo el historial... esto puede tardar unos segundos.")
         # Se ejecuta en el hilo del cliente, está bien para este uso
@@ -489,7 +489,7 @@ def manejar_cliente(conn, addr):
     finally: remover_cliente(conn)
 
 def main():
-    # [NUEVO] Verificación de IA
+    # Verificación de IA
     try:
         requests.get("http://localhost:11434")
         print("[IA] Ollama detectado y listo.")
