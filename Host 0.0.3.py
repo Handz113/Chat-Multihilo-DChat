@@ -4,7 +4,7 @@ import json
 import hashlib
 import os
 import ssl
-import requests  # [NUEVO] Necesario para la IA
+import requests  
 from datetime import datetime
 
 # --- Configuración Inicial ---
