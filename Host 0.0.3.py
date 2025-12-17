@@ -4,7 +4,7 @@ import json
 import hashlib
 import os
 import ssl
-import requests  
+import requests  # [NUEVO] Necesario para la IA
 from datetime import datetime
 
 # --- Configuración Inicial ---
@@ -13,13 +13,13 @@ historial_file = "historial.json"
 pines_file = "pines.json"
 salas_file = "salas.json"
 
-
+# Configuración de OLLAMA [NUEVO]
 OLLAMA_URL = "http://localhost:11434/api/generate"
 MODELO_IA = "llama3.2:3b"
 
 # Verificación de certificados
 if not (os.path.exists("server.crt") and os.path.exists("server.key")):
-    print("ADVERTENCIA: No se encontraron 'server.crt' o 'server.key'.")
+    print("⚠️ ADVERTENCIA: No se encontraron 'server.crt' o 'server.key'.")
 
 # --- Base de Datos Usuarios ---
 def cargar_usuarios():
@@ -81,11 +81,11 @@ def enviar_historial_a_usuario(conn, sala):
     hist = cargar_historial()
     msgs = hist.get(sala, [])
     if not msgs: return
-    enviar_privado(conn, f"\n--- Historial de {sala} ---")
+    enviar_privado(conn, f"\n--- 📜 Historial de {sala} ---")
     for m in msgs: enviar_privado(conn, m)
     enviar_privado(conn, "--------------------------------\n")
 
-# --- LÓGICA DE INTELIGENCIA ARTIFICIAL ---
+# --- [NUEVO] LÓGICA DE INTELIGENCIA ARTIFICIAL ---
 def generar_resumen_ollama(sala):
     """Lee el historial y solicita un resumen a Llama 3.2"""
     hist = cargar_historial()
@@ -111,16 +111,16 @@ def generar_resumen_ollama(sala):
     }
     
     try:
-        print(f"[IA] Generando resumen para {sala}...")
+        print(f"🤖 [IA] Generando resumen para {sala}...")
         # Timeout de 90 segundos para darle tiempo a la Raspberry Pi
         response = requests.post(OLLAMA_URL, json=payload, timeout=90) 
         response.raise_for_status()
         resultado = response.json()
         return resultado.get("response", "La IA no devolvió respuesta.")
     except requests.exceptions.ConnectionError:
-        return "Error: El servicio de IA (Ollama) no está corriendo en el servidor."
+        return "❌ Error: El servicio de IA (Ollama) no está corriendo en el servidor."
     except Exception as e:
-        return f"Error generando resumen: {str(e)}"
+        return f"❌ Error generando resumen: {str(e)}"
 
 # --- Pines ---
 def cargar_pines():
@@ -211,7 +211,7 @@ def procesar_comando(conn, mensaje, alias, rol, sala_actual):
     es_staff = (rol == "admin" or rol == "docente")
     es_admin = (rol == "admin")
 
-    # COMANDO IA /resume
+    # [NUEVO] COMANDO IA /resume
     if comando == "/resume":
         enviar_privado(conn, "🤖 La IA está leyendo el historial... esto puede tardar unos segundos.")
         # Se ejecuta en el hilo del cliente, está bien para este uso
@@ -276,7 +276,7 @@ def procesar_comando(conn, mensaje, alias, rol, sala_actual):
             if s_u in lista_equipos:
                 info = f"{datos['alias']}"
                 if datos['rol'] != "estudiante": info += f" [{datos['rol'].upper()}]"
-                if datos['muted']: info += " (silenciado)"
+                if datos['muted']: info += " 🔇"
                 lista_equipos[s_u].append(info)
         enviar_privado(conn, f"USERS_LIST:{json.dumps(lista_equipos)}")
         return True
@@ -323,7 +323,7 @@ def procesar_comando(conn, mensaje, alias, rol, sala_actual):
 
     if comando == "/anuncio":
         if not es_staff: return True
-        broadcast(sala_actual, f"\n[ANUNCIO]\n{' '.join(partes[1:])}\n")
+        broadcast(sala_actual, f"\n📢 [ANUNCIO] 📢\n{' '.join(partes[1:])}\n")
         return True
 
     if comando == "/kick":
@@ -332,9 +332,9 @@ def procesar_comando(conn, mensaje, alias, rol, sala_actual):
         for s, d in list(clientes.items()):
             if d["alias"].lower() == target:
                 if d["rol"] == "admin": return True
-                enviar_privado(s, "Expulsado.")
+                enviar_privado(s, "🚫 Expulsado.")
                 remover_cliente(s)
-                enviar_privado(conn, f"{target} expulsado.")
+                enviar_privado(conn, f"✅ {target} expulsado.")
                 return True
         return True
 
@@ -348,9 +348,9 @@ def procesar_comando(conn, mensaje, alias, rol, sala_actual):
             guardar_usuarios(usrs)
             for s, d in list(clientes.items()):
                 if d["alias"] == target:
-                    enviar_privado(s, "BANEADO.")
+                    enviar_privado(s, "⛔ BANEADO.")
                     remover_cliente(s)
-            enviar_privado(conn, "Usuario baneado.")
+            enviar_privado(conn, "✅ Usuario baneado.")
         return True
 
     if comando == "/unban":
@@ -360,7 +360,7 @@ def procesar_comando(conn, mensaje, alias, rol, sala_actual):
         if target in usrs:
             usrs[target]["banned"] = False
             guardar_usuarios(usrs)
-            enviar_privado(conn, "Desbaneado.")
+            enviar_privado(conn, "✅ Desbaneado.")
         return True
     
     if comando == "/mute":
@@ -369,8 +369,8 @@ def procesar_comando(conn, mensaje, alias, rol, sala_actual):
         for s, d in clientes.items():
             if d["alias"].lower() == target:
                 d["muted"] = True
-                enviar_privado(s, "Silenciado.")
-                enviar_privado(conn, "Listo.")
+                enviar_privado(s, "😶 Silenciado.")
+                enviar_privado(conn, "✅ Listo.")
                 return True
         return True
 
@@ -380,8 +380,8 @@ def procesar_comando(conn, mensaje, alias, rol, sala_actual):
         for s, d in clientes.items():
             if d["alias"].lower() == target:
                 d["muted"] = False
-                enviar_privado(s, "Liberado.")
-                enviar_privado(conn, "Listo.")
+                enviar_privado(s, "🗣️ Liberado.")
+                enviar_privado(conn, "✅ Listo.")
                 return True
         return True
 
@@ -396,8 +396,8 @@ def procesar_comando(conn, mensaje, alias, rol, sala_actual):
             for s, d in clientes.items():
                 if d["alias"] == target:
                     d["rol"] = n_rol
-                    enviar_privado(s, f"Nuevo rol: {n_rol}")
-            enviar_privado(conn, f"{target} es ahora {n_rol}.")
+                    enviar_privado(s, f"🎖️ Nuevo rol: {n_rol}")
+            enviar_privado(conn, f"✅ {target} es ahora {n_rol}.")
         return True
 
     enviar_privado(conn, "❌ Comando desconocido.")
@@ -405,7 +405,7 @@ def procesar_comando(conn, mensaje, alias, rol, sala_actual):
 
 # --- MAIN ---
 def manejar_cliente(conn, addr):
-    print(f"[CONEXION] {addr}")
+    print(f"🔒 [CONEXIÓN] {addr}")
     try:
         opcion = conn.recv(1024).decode("utf-8").lower().strip()
         if opcion == "l": 
@@ -416,7 +416,7 @@ def manejar_cliente(conn, addr):
             hashed = hashlib.sha256(pwd.encode()).hexdigest()
             rol = login_verificacion(user, hashed)
             if rol == "BANNED":
-                conn.send("SUSPENDIDA.".encode())
+                conn.send("⛔ SUSPENDIDA.".encode())
                 return
             elif rol:
                 conn.send(f"Bienvenido {user} [{rol.upper()}]".encode())
@@ -445,13 +445,13 @@ def manejar_cliente(conn, addr):
                         if data.lower() in ["y", "s", "si"]:
                             guardar_pin(clientes[conn]["sala"], clientes[conn]["pending_pin"])
                             broadcast_pin(clientes[conn]["sala"], clientes[conn]["pending_pin"])
-                            enviar_privado(conn, "Actualizado.")
-                        else: enviar_privado(conn, "Cancelado.")
+                            enviar_privado(conn, "✅ Actualizado.")
+                        else: enviar_privado(conn, "❌ Cancelado.")
                         clientes[conn]["pending_pin"] = None
                         continue
 
                     if clientes[conn]["muted"] and not data.startswith("/"):
-                        enviar_privado(conn, "Silenciado.")
+                        enviar_privado(conn, "😶 Silenciado.")
                         continue
 
                     if data.startswith("/"):
@@ -459,8 +459,8 @@ def manejar_cliente(conn, addr):
                         procesar_comando(conn, data, user, rol, sala_previa)
                     else:
                         prefijo = ""
-                        if rol == "admin": prefijo = "[ADMIN] "
-                        elif rol == "docente": prefijo = "[DOCENTE] "
+                        if rol == "admin": prefijo = "👑 [ADMIN] "
+                        elif rol == "docente": prefijo = "🎓 [DOCENTE] "
                         broadcast(clientes[conn]["sala"], f"{prefijo}{user}: {data}", conn)
                 return
             else:
@@ -489,24 +489,24 @@ def manejar_cliente(conn, addr):
     finally: remover_cliente(conn)
 
 def main():
-    # Verificación de IA
+    # [NUEVO] Verificación de IA
     try:
         requests.get("http://localhost:11434")
-        print("[IA] Ollama detectado y listo.")
+        print("🤖 [IA] Ollama detectado y listo.")
     except:
-        print("[IA] OLLAMA NO RESPONDE. El comando /resume fallará.")
+        print("⚠️ [IA] OLLAMA NO RESPONDE. El comando /resume fallará.")
         print("   -> Asegúrate de ejecutar 'ollama serve' en la Raspberry.")
 
     try:
         ctx = ssl.create_default_context(ssl.Purpose.CLIENT_AUTH)
         ctx.load_cert_chain("server.crt", "server.key")
     except:
-        print("Error SSL: No se encuentran las llaves. El servidor no iniciará.")
+        print("❌ Error SSL: No se encuentran las llaves. El servidor no iniciará.")
         return
     s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    s.bind(("0.0.0.0", 5000))
+    s.bind(("192.168.100.37", 5000))
     s.listen(5)
-    print("[SERVIDOR COMPLETO] Listo en puerto 5000.")
+    print("📌 [SERVIDOR COMPLETO] Listo en puerto 5000.")
     while True:
         c, a = s.accept()
         threading.Thread(target=manejar_cliente, args=(ctx.wrap_socket(c, server_side=True), a), daemon=True).start()
