@@ -23,6 +23,10 @@ class ChatApp(CTk):
         self.cola_mensajes = queue.Queue()
         self.network_manager = NetworkManager(self.cola_mensajes)
         
+        # --- NUEVO: DEBOUNCE PARA REDIMENSIONAMIENTO ---
+        self.resize_after_id = None
+        self.RESIZE_DELAY = 200  # millisegundos
+        
         try:
             self.original_image = Image.open(BACKGROUND_IMAGE_PATH)
             self.background_image_ctk = CTkImage(self.original_image, size=(800, 800)) 
@@ -61,17 +65,31 @@ class ChatApp(CTk):
         self.after(100, self.procesar_cola)
 
     def _resize_background_image(self, event):
+        """Redimensiona imagen de fondo con debounce de 200ms"""
+        # Cancelar el anterior scheduled resize si existe
+        if self.resize_after_id is not None:
+            self.after_cancel(self.resize_after_id)
+        
+        # Programar nuevo resize después de 200ms de inactividad
+        self.resize_after_id = self.after(self.RESIZE_DELAY, self._do_resize_background, event.width, event.height)
+
+    def _do_resize_background(self, width, height):
+        """Ejecuta el redimensionamiento real de la imagen"""
         if self.original_image and self.background_label:
-            new_w, new_h = event.width, event.height
-            if new_w == 0 or new_h == 0: return
-            res_img = self.original_image.resize((new_w, new_h), Image.Resampling.LANCZOS)
-            self.bg_ctk = CTkImage(light_image=res_img, dark_image=res_img, size=(new_w, new_h))
-            self.background_label.configure(image=self.bg_ctk)
-            self.background_label.lower()
+            if width == 0 or height == 0:
+                return
+            
+            try:
+                res_img = self.original_image.resize((width, height), Image.Resampling.LANCZOS)
+                self.bg_ctk = CTkImage(light_image=res_img, dark_image=res_img, size=(width, height))
+                self.background_label.configure(image=self.bg_ctk)
+                self.background_label.lower()
+            except Exception as e:
+                print(f"Error redimensionando imagen: {e}")
+        
+        self.resize_after_id = None
 
     # --- NAVEGACIÓN ---
-# En chat_app.py
-
     def show_login(self):
         # Ocultar otras pantallas
         self.reg_frame.place_forget()
@@ -84,10 +102,8 @@ class ChatApp(CTk):
             
         self.geometry("400x600")
         
-        # --- [AGREGA ESTA LÍNEA AQUÍ] ---
         # Reseteamos el botón para asegurar que siempre esté disponible al volver
         self.btn_login.configure(state="normal", text="Iniciar Sesión")
-        # --------------------------------
         
         self.login_frame.place(relx=0.5, rely=0.5, anchor="center")
         self.login_frame.tkraise()
@@ -110,8 +126,6 @@ class ChatApp(CTk):
         self._crear_interfaz_chat_base()
         
         self.network_manager.start_listening()
-        # NOTA: Ya no llamamos a cambiar_sala manualmente aquí, 
-        # esperamos a que el servidor nos diga las salas disponibles.
 
     # --- UI CHAT ---
     def _crear_interfaz_chat_base(self):
@@ -260,7 +274,31 @@ class ChatApp(CTk):
                         if texto_pin: self.pin_label.configure(text=texto_pin, font=("Arial", 12, "bold"), text_color="white")
                         else: self.pin_label.configure(text="(Ningún mensaje fijado)", font=("Arial", 12, "italic"), text_color="#888888")
                 
-                # --- NUEVO: LISTA DE SALAS ---
+                # --- HISTORIAL EN LOTE (OPTIMIZADO) ---
+                elif msg.startswith("HISTORY_BATCH:"):
+                    json_historial = msg.split(":", 1)[1]
+                    try:
+                        datos = json.loads(json_historial)
+                        if hasattr(self, 'chat_area'):
+                            mensajes = datos.get("mensajes", [])
+                            if mensajes:
+                                # Cambiar estado una sola vez
+                                self.chat_area.configure(state="normal")
+                                
+                                # Construir string con todos los mensajes
+                                contenido = ""
+                                for m in mensajes:
+                                    contenido += m + "\n"
+                                
+                                # Insertar todo de una vez
+                                self.chat_area.insert(tk.END, contenido)
+                                
+                                # Cambiar estado y desplazar
+                                self.chat_area.configure(state="disabled")
+                                self.chat_area.see(tk.END)
+                    except Exception as e:
+                        print(f"Error parseando historial: {e}")
+                
                 elif msg.startswith("ROOMS_UPDATE:"):
                     json_salas = msg.split(":", 1)[1]
                     try:
@@ -286,6 +324,10 @@ class ChatApp(CTk):
             self.after(100, self.procesar_cola)
 
     def on_closing(self):
+        # Cancelar resize pendiente si existe
+        if self.resize_after_id is not None:
+            self.after_cancel(self.resize_after_id)
+        
         try: self.network_manager.disconnect()
         except: pass
         self.destroy()
