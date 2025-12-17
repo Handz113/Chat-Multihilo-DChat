@@ -30,9 +30,11 @@ class NetworkManager:
         threading.Thread(target=self._listen, daemon=True).start()
 
     def _listen(self):
+        """Hilo que escucha mensajes del servidor con buffer aumentado para HISTORY_BATCH"""
         while self.connected:
             try:
-                data = self.client.recv(4096).decode("utf-8")
+                # Buffer aumentado de 4096 a 65536 para soportar historial completo
+                data = self.client.recv(65536).decode("utf-8")
                 if not data: break
                 self.queue.put(data)
             except: break
