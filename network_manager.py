@@ -22,23 +22,37 @@ class NetworkManager:
 
     def send_msg(self, msg):
         if self.connected:
-            try: self.client.send(msg.encode("utf-8")); return True
-            except: self.disconnect(); return False
+            try: 
+                self.client.send(msg.encode("utf-8"))
+                return True
+            except (ssl.SSLEOFError, BrokenPipeError, OSError): 
+                self.disconnect()
+                return False
         return False
 
     def start_listening(self):
         threading.Thread(target=self._listen, daemon=True).start()
 
     def _listen(self):
-        """Hilo que escucha mensajes del servidor con buffer aumentado para HISTORY_BATCH"""
+        """Hilo que escucha mensajes del servidor"""
         while self.connected:
             try:
-                # Buffer aumentado de 4096 a 65536 para soportar historial completo
                 data = self.client.recv(65536).decode("utf-8")
-                if not data: break
+                if not data: 
+                    break
                 self.queue.put(data)
-            except: break
-        self.connected = False; self.queue.put("[SISTEMA] Desconectado.")
+            except ssl.SSLEOFError:
+                # El servidor cerró la conexión SSL (comportamiento esperado al salir/kick)
+                break 
+            except OSError:
+                # El socket murió
+                break
+            except Exception as e:
+                print(f"Error desconocido en listen: {e}")
+                break
+        
+        self.connected = False
+        self.queue.put("[SISTEMA] Desconectado.")
 
     def solicitar_usuarios(self): self.send_msg("/get_users")
 
@@ -46,11 +60,10 @@ class NetworkManager:
     # En network_manager.py
 
     def login(self, u, p):
-        # 1. Intentar conectar si no lo está
+        # Si no estamos conectados, intentamos conectar primero
         if not self.connected: 
             exito, error = self.connect()
             if not exito: 
-                # [CORRECCIÓN] Avisar a la GUI que falló para que desbloquee el botón
                 self.queue.put(f"[LOGIN] Error de conexión: {error}")
                 return
 
@@ -65,13 +78,18 @@ class NetworkManager:
             resp = self.client.recv(1024).decode().strip()
             
             self.queue.put(f"[LOGIN] {resp}")
+            
+            # --- CORRECCIÓN CRÍTICA ---
+            # Si el servidor no responde con "Bienvenido", significa que rechazó el login
+            # y cerró el socket en su 'finally'. Debemos cerrar aquí también.
+            if "Bienvenido" not in resp:
+                self.disconnect()
+                
         except Exception as e: 
             self.disconnect()
-            # [CORRECCIÓN] Avisar del error en caso de crash durante el envío
             self.queue.put(f"[LOGIN] Error de red: {str(e)}")
 
     def register(self, u, p, q, a):
-        # 1. Intentar conectar
         if not self.connected: 
             exito, error = self.connect()
             if not exito: 
@@ -95,6 +113,12 @@ class NetworkManager:
             resp = self.client.recv(1024).decode()
             
             self.queue.put(f"[REGISTRO] {resp}")
+            
+            # --- CORRECCIÓN CRÍTICA ---
+            # El servidor SIEMPRE cierra la conexión tras el registro.
+            # Debemos desconectar el cliente para limpiar el socket.
+            self.disconnect() 
+            
         except Exception as e: 
             self.disconnect()
             self.queue.put(f"[REGISTRO] Error de red: {str(e)}")
