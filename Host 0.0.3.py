@@ -228,7 +228,7 @@ def generar_resumen_ollama(sala):
     if not mensajes:
         return "No hay suficientes mensajes para generar un resumen."
     
-    ultimos_mensajes = mensajes[-50:]
+    ultimos_mensajes = mensajes[-20:]
     texto_conversacion = "\n".join(ultimos_mensajes)
     
     prompt_sistema = (
@@ -240,7 +240,8 @@ def generar_resumen_ollama(sala):
     payload = {
         "model": MODELO_IA,
         "prompt": f"{prompt_sistema}\n\nConversación:\n{texto_conversacion}",
-        "stream": False
+        "stream": False,
+        "keep_alive": 3600
     }
     
     try:
@@ -343,7 +344,7 @@ def registrar_usuario(conn, user, hashed_pwd, pregunta, hashed_resp):
         }
         cambios_pendientes["usuarios"] = True
     
-    conn.send(f"Registro exitoso. Rol asignado: {rol_inicial.upper()}.".encode("utf-8"))
+    conn.send(f"Registro exitoso. Rol asignado: {rol_inicial.upper()}.\n".encode("utf-8"))
     return True
 
 def login_verificacion(user, hashed_pwd):
@@ -447,14 +448,6 @@ def procesar_comando(conn, mensaje, alias, rol, sala_actual):
         enviar_privado(conn, f"USERS_LIST:{json.dumps(lista_equipos)}")
         return True
 
-    if comando == "/help":
-        ayuda = "--- AYUDA ---\n/mirol, /join [sala], /resume (IA)"
-        if es_staff:
-            ayuda += "\n(STAFF) /kick, /mute, /unmute, /anuncio, /pin"
-        if es_admin:
-            ayuda += "\n(ADMIN) /crear [nombre], /borrar [nombre], /promote, /ban"
-        enviar_privado(conn, ayuda)
-        return True
 
     if comando == "/mirol":
         enviar_privado(conn, f"🕵️ Tu rol es: [{rol.upper()}]")
@@ -499,6 +492,34 @@ def procesar_comando(conn, mensaje, alias, rol, sala_actual):
             return True
         broadcast(sala_actual, f"\n📢 [ANUNCIO] 📢\n{' '.join(partes[1:])}\n")
         return True
+    
+    if comando == "/unpin":
+        if not es_staff:
+            return True
+        
+        # Verificar si hay un pin que borrar
+        with cache_lock:
+            actual = pines_cache.get(sala_actual, "")
+            
+        if not actual:
+            enviar_privado(conn, "ℹ️ No hay ningún mensaje fijado en esta sala.")
+            return True
+
+        # Borrar pin (string vacío)
+        guardar_pin(sala_actual, "")
+        broadcast_pin(sala_actual, "")
+        enviar_privado(conn, "✅ Mensaje fijado eliminado.")
+        return True
+        
+    if comando == "/help":
+        ayuda = "--- AYUDA ---\n/mirol, /join [sala], /resume (IA)"
+        if es_staff:
+            ayuda += "\n(STAFF) /kick, /mute, /unmute, /anuncio, /pin, /unpin"
+        if es_admin:
+            # Agregamos /roles aquí
+            ayuda += "\n(ADMIN) /crear, /borrar, /promote, /ban, /unban, /roles" 
+        enviar_privado(conn, ayuda)
+        return True
 
     if comando == "/kick":
         if not es_staff:
@@ -512,6 +533,21 @@ def procesar_comando(conn, mensaje, alias, rol, sala_actual):
                 remover_cliente(s)
                 enviar_privado(conn, f"✅ {target} expulsado.")
                 return True
+        return True
+        
+    if comando == "/roles":
+        if not es_admin:
+            return True # Ignorar si no es admin
+            
+        mensaje_roles = (
+            "📋 --- ROLES DISPONIBLES ---\n"
+            "Estos son los roles válidos para /promote:\n\n"
+            "• admin      (Control total)\n"
+            "• docente    (Moderación: kick, ban, mute, pin)\n"
+            "• estudiante (Rol por defecto)\n\n"
+            "Ejemplo de uso: /promote Juan docente"
+        )
+        enviar_privado(conn, mensaje_roles)
         return True
 
     if comando == "/ban":
@@ -605,7 +641,7 @@ def manejar_cliente(conn, addr):
                 conn.send("⛔ SUSPENDIDA.".encode())
                 return
             elif rol:
-                conn.send(f"Bienvenido {user} [{rol.upper()}]".encode())
+                conn.send(f"Bienvenido {user} [{rol.upper()}]\n".encode())
                 
                 sala_inicial = list(salas.keys())[0]
                 clientes[conn] = {"alias": user, "sala": sala_inicial, "rol": rol, "muted": False, "pending_pin": None}
@@ -626,6 +662,9 @@ def manejar_cliente(conn, addr):
                     if not data:
                         break
                     
+                    if conn in clientes:
+                        rol = clientes[conn]["rol"]
+
                     if clientes[conn].get("pending_pin"):
                         if data.lower() in ["y", "s", "si"]:
                             guardar_pin(clientes[conn]["sala"], clientes[conn]["pending_pin"])
@@ -716,7 +755,7 @@ def main():
         return
     
     s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    s.bind(("192.168.1.110", 5000))
+    s.bind(("192.168.1.100", 5000))
     s.listen(5)
     print("📌 [SERVIDOR COMPLETO] Listo en puerto 5000.")
     
