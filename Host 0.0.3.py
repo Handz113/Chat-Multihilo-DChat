@@ -4,8 +4,9 @@ import json
 import hashlib
 import os
 import ssl
-import requests  # [NUEVO] Necesario para la IA
+import requests
 from datetime import datetime
+import time
 
 # --- Configuración Inicial ---
 usuarios_file = "usuarios.json"
@@ -13,7 +14,7 @@ historial_file = "historial.json"
 pines_file = "pines.json"
 salas_file = "salas.json"
 
-# Configuración de OLLAMA [NUEVO]
+# Configuración de OLLAMA
 OLLAMA_URL = "http://localhost:11434/api/generate"
 MODELO_IA = "llama3.2:3b"
 
@@ -21,80 +22,212 @@ MODELO_IA = "llama3.2:3b"
 if not (os.path.exists("server.crt") and os.path.exists("server.key")):
     print("⚠️ ADVERTENCIA: No se encontraron 'server.crt' o 'server.key'.")
 
-# --- Base de Datos Usuarios ---
-def cargar_usuarios():
-    if not os.path.exists(usuarios_file):
+# --- CACHÉ EN MEMORIA Y CONTROL DE CAMBIOS ---
+usuarios_cache = {}
+historial_cache = {}
+pines_cache = {}
+salas_nombres_cache = []
+salas = {}
+clientes = {}
+
+# Banderas de cambios pendientes
+cambios_pendientes = {
+    "usuarios": False,
+    "historial": False,
+    "pines": False,
+    "salas": False
+}
+
+# Lock para operaciones thread-safe
+cache_lock = threading.Lock()
+
+# --- INICIALIZACIÓN DE CACHÉ ---
+def inicializar_cache():
+    """Carga todos los datos en memoria al iniciar"""
+    global usuarios_cache, historial_cache, pines_cache, salas_nombres_cache, salas
+    
+    # Cargar usuarios
+    if os.path.exists(usuarios_file):
+        try:
+            with open(usuarios_file, "r") as f:
+                usuarios_cache = json.load(f)
+        except:
+            usuarios_cache = {}
+    else:
+        usuarios_cache = {}
+        guardar_cache_usuarios()
+    
+    # Cargar nombres de salas
+    if os.path.exists(salas_file):
+        try:
+            with open(salas_file, "r") as f:
+                salas_nombres_cache = json.load(f)
+        except:
+            salas_nombres_cache = ["General", "Equipo 1", "Equipo 2"]
+    else:
+        salas_nombres_cache = ["General", "Equipo 1", "Equipo 2"]
+        guardar_cache_salas()
+    
+    # Inicializar estructura de salas
+    salas = {nombre: [] for nombre in salas_nombres_cache}
+    
+    # Cargar historial
+    if os.path.exists(historial_file):
+        try:
+            with open(historial_file, "r") as f:
+                historial_cache = json.load(f)
+        except:
+            historial_cache = {s: [] for s in salas.keys()}
+    else:
+        historial_cache = {s: [] for s in salas.keys()}
+        guardar_cache_historial()
+    
+    # Cargar pines
+    if os.path.exists(pines_file):
+        try:
+            with open(pines_file, "r") as f:
+                pines_cache = json.load(f)
+        except:
+            pines_cache = {s: "" for s in salas.keys()}
+    else:
+        pines_cache = {s: "" for s in salas.keys()}
+        guardar_cache_pines()
+    
+    print("✅ Caché en memoria inicializado.")
+
+# --- FUNCIONES DE GUARDADO A DISCO ---
+def guardar_cache_usuarios():
+    """Escribe el caché de usuarios a disco"""
+    try:
         with open(usuarios_file, "w") as f:
-            json.dump({}, f)
-    with open(usuarios_file, "r") as f:
-        try: return json.load(f)
-        except: return {}
+            json.dump(usuarios_cache, f, indent=4)
+    except Exception as e:
+        print(f"Error guardando usuarios: {e}")
+
+def guardar_cache_historial():
+    """Escribe el caché de historial a disco"""
+    try:
+        with open(historial_file, "w") as f:
+            json.dump(historial_cache, f, indent=4)
+    except Exception as e:
+        print(f"Error guardando historial: {e}")
+
+def guardar_cache_pines():
+    """Escribe el caché de pines a disco"""
+    try:
+        with open(pines_file, "w") as f:
+            json.dump(pines_cache, f, indent=4)
+    except Exception as e:
+        print(f"Error guardando pines: {e}")
+
+def guardar_cache_salas():
+    """Escribe el caché de nombres de salas a disco"""
+    try:
+        with open(salas_file, "w") as f:
+            json.dump(salas_nombres_cache, f, indent=4)
+    except Exception as e:
+        print(f"Error guardando salas: {e}")
+
+# --- HILO AUTOSAVE ---
+def hilo_autosave():
+    """Hilo en segundo plano que guarda cambios cada 60 segundos"""
+    while True:
+        time.sleep(60)
+        with cache_lock:
+            if cambios_pendientes["usuarios"]:
+                guardar_cache_usuarios()
+                cambios_pendientes["usuarios"] = False
+                print("💾 Usuarios guardados.")
+            if cambios_pendientes["historial"]:
+                guardar_cache_historial()
+                cambios_pendientes["historial"] = False
+                print("💾 Historial guardado.")
+            if cambios_pendientes["pines"]:
+                guardar_cache_pines()
+                cambios_pendientes["pines"] = False
+                print("💾 Pines guardados.")
+            if cambios_pendientes["salas"]:
+                guardar_cache_salas()
+                cambios_pendientes["salas"] = False
+                print("💾 Salas guardadas.")
+
+# --- FUNCIONES DE ACCESO A USUARIOS ---
+def cargar_usuarios():
+    """Retorna el caché de usuarios"""
+    with cache_lock:
+        return usuarios_cache.copy()
 
 def guardar_usuarios(data):
-    try:
-        with open(usuarios_file, "w") as f: json.dump(data, f, indent=4)
-    except Exception as e: print(f"Error guardando usuarios: {e}")
+    """Modifica el caché y marca como pendiente de guardar"""
+    with cache_lock:
+        usuarios_cache.clear()
+        usuarios_cache.update(data)
+        cambios_pendientes["usuarios"] = True
 
-# --- Gestión de Salas (Dinámica) ---
+# --- FUNCIONES DE GESTIÓN DE SALAS ---
 def cargar_nombres_salas():
-    if not os.path.exists(salas_file):
-        default = ["General", "Equipo 1", "Equipo 2"]
-        with open(salas_file, "w") as f: json.dump(default, f)
-        return default
-    with open(salas_file, "r") as f:
-        try: return json.load(f)
-        except: return ["General"]
+    """Retorna el caché de nombres de salas"""
+    with cache_lock:
+        return salas_nombres_cache.copy()
 
 def guardar_nombres_salas(lista_nombres):
-    try:
-        with open(salas_file, "w") as f: json.dump(lista_nombres, f, indent=4)
-    except: pass
+    """Modifica el caché de salas y marca como pendiente"""
+    with cache_lock:
+        salas_nombres_cache.clear()
+        salas_nombres_cache.extend(lista_nombres)
+        cambios_pendientes["salas"] = True
 
-# Inicializar estructura en memoria
-nombres_guardados = cargar_nombres_salas()
-salas = {nombre: [] for nombre in nombres_guardados}
-clientes = {} 
-
-# --- Historial ---
+# --- FUNCIONES DE HISTORIAL ---
 def cargar_historial():
-    if not os.path.exists(historial_file):
-        init = {s: [] for s in salas.keys()}
-        with open(historial_file, "w") as f: json.dump(init, f)
-        return init
-    with open(historial_file, "r") as f:
-        try: return json.load(f)
-        except: return {}
+    """Retorna el caché de historial"""
+    with cache_lock:
+        return {k: v.copy() for k, v in historial_cache.items()}
 
 def registrar_mensaje_historial(sala, mensaje_formateado):
-    if sala not in salas: return
-    hist = cargar_historial()
-    if sala not in hist: hist[sala] = []
+    """Registra mensaje en el caché sin escribir a disco inmediatamente"""
+    if sala not in salas:
+        return
     
-    hist[sala].append(mensaje_formateado)
-    if len(hist[sala]) > 1000: hist[sala] = hist[sala][-1000:]
+    with cache_lock:
+        if sala not in historial_cache:
+            historial_cache[sala] = []
         
-    try:
-        with open(historial_file, "w") as f: json.dump(hist, f, indent=4)
-    except: pass
+        historial_cache[sala].append(mensaje_formateado)
+        
+        # Limitar a 1000 mensajes por sala
+        if len(historial_cache[sala]) > 1000:
+            historial_cache[sala] = historial_cache[sala][-1000:]
+        
+        cambios_pendientes["historial"] = True
 
 def enviar_historial_a_usuario(conn, sala):
-    hist = cargar_historial()
-    msgs = hist.get(sala, [])
-    if not msgs: return
-    enviar_privado(conn, f"\n--- 📜 Historial de {sala} ---")
-    for m in msgs: enviar_privado(conn, m)
-    enviar_privado(conn, "--------------------------------\n")
+    """Envía el historial del caché al usuario en un solo mensaje JSON"""
+    with cache_lock:
+        msgs = historial_cache.get(sala, [])
+    
+    if not msgs:
+        return
+    
+    # Serializar lista de mensajes a JSON
+    historial_json = json.dumps({
+        "sala": sala,
+        "mensajes": msgs,
+        "total": len(msgs)
+    })
+    
+    # Enviar en un solo mensaje con prefijo HISTORY_BATCH
+    comando = f"HISTORY_BATCH:{historial_json}"
+    enviar_privado(conn, comando)
 
-# --- [NUEVO] LÓGICA DE INTELIGENCIA ARTIFICIAL ---
+# --- LÓGICA DE INTELIGENCIA ARTIFICIAL ---
 def generar_resumen_ollama(sala):
-    """Lee el historial y solicita un resumen a Llama 3.2"""
-    hist = cargar_historial()
-    mensajes = hist.get(sala, [])
+    """Lee el historial del caché y solicita un resumen a Llama 3.2"""
+    with cache_lock:
+        mensajes = historial_cache.get(sala, [])
     
     if not mensajes:
         return "No hay suficientes mensajes para generar un resumen."
     
-    # Tomamos los últimos 50 mensajes para no saturar el contexto
     ultimos_mensajes = mensajes[-50:]
     texto_conversacion = "\n".join(ultimos_mensajes)
     
@@ -112,8 +245,7 @@ def generar_resumen_ollama(sala):
     
     try:
         print(f"🤖 [IA] Generando resumen para {sala}...")
-        # Timeout de 90 segundos para darle tiempo a la Raspberry Pi
-        response = requests.post(OLLAMA_URL, json=payload, timeout=90) 
+        response = requests.post(OLLAMA_URL, json=payload, timeout=90)
         response.raise_for_status()
         resultado = response.json()
         return resultado.get("response", "La IA no devolvió respuesta.")
@@ -122,86 +254,107 @@ def generar_resumen_ollama(sala):
     except Exception as e:
         return f"❌ Error generando resumen: {str(e)}"
 
-# --- Pines ---
+# --- FUNCIONES DE PINES ---
 def cargar_pines():
-    if not os.path.exists(pines_file):
-        init = {s: "" for s in salas.keys()}
-        with open(pines_file, "w") as f: json.dump(init, f)
-        return init
-    with open(pines_file, "r") as f:
-        try: return json.load(f)
-        except: return {}
+    """Retorna el caché de pines"""
+    with cache_lock:
+        return pines_cache.copy()
 
 def guardar_pin(sala, mensaje):
-    pines = cargar_pines()
-    pines[sala] = mensaje
-    try:
-        with open(pines_file, "w") as f: json.dump(pines, f, indent=4)
-    except: pass
+    """Modifica el pin en el caché y marca como pendiente"""
+    with cache_lock:
+        pines_cache[sala] = mensaje
+        cambios_pendientes["pines"] = True
 
 def broadcast_pin(sala, mensaje):
+    """Difunde actualización de pin a todos en la sala"""
     comando = f"PIN_UPDATE:{mensaje}"
     if sala in salas:
         for conn in salas[sala]:
-            try: conn.send(comando.encode("utf-8"))
-            except: pass
+            try:
+                conn.send(comando.encode("utf-8"))
+            except:
+                pass
 
 # --- Utilidades de Red ---
 def broadcast(sala, mensaje, remitente_conn=None):
+    """Difunde mensaje a todos en la sala"""
     hora = datetime.now().strftime("%H:%M")
     msg_final = f"[{hora}] {mensaje}"
-    if sala in salas: registrar_mensaje_historial(sala, msg_final)
-    if sala not in salas: return
+    registrar_mensaje_historial(sala, msg_final)
+    if sala not in salas:
+        return
     for conn in list(salas[sala]):
         if conn != remitente_conn:
-            try: conn.send(msg_final.encode("utf-8"))
-            except: remover_cliente(conn)
+            try:
+                conn.send(msg_final.encode("utf-8"))
+            except:
+                remover_cliente(conn)
 
 def broadcast_lista_salas():
+    """Difunde lista de salas a todos los clientes"""
     lista = list(salas.keys())
     json_salas = json.dumps(lista)
     msg = f"ROOMS_UPDATE:{json_salas}"
     for conn in clientes.keys():
-        try: conn.send(msg.encode("utf-8"))
-        except: pass
+        try:
+            conn.send(msg.encode("utf-8"))
+        except:
+            pass
 
 def enviar_privado(conn, mensaje):
-    try: conn.send(mensaje.encode("utf-8"))
-    except: pass
+    """Envía mensaje privado a un cliente"""
+    try:
+        conn.send(mensaje.encode("utf-8"))
+    except:
+        pass
 
 def remover_cliente(conn):
+    """Remueve cliente de todas las estructuras"""
     if conn in clientes:
         alias = clientes[conn]["alias"]
         sala = clientes[conn]["sala"]
-        if sala in salas and conn in salas[sala]: salas[sala].remove(conn)
+        if sala in salas and conn in salas[sala]:
+            salas[sala].remove(conn)
         del clientes[conn]
-    try: conn.close()
-    except: pass
+    try:
+        conn.close()
+    except:
+        pass
 
 # --- Auth ---
 def registrar_usuario(conn, user, hashed_pwd, pregunta, hashed_resp):
-    usuarios = cargar_usuarios()
-    if user in usuarios:
-        conn.send("Usuario ya existe.\n".encode("utf-8"))
-        return False 
-    else:
+    """Registra usuario en el caché"""
+    with cache_lock:
+        if user in usuarios_cache:
+            conn.send("Usuario ya existe.\n".encode("utf-8"))
+            return False
+        
         rol_inicial = "estudiante"
-        if len(usuarios) == 0: rol_inicial = "admin"
-        usuarios[user] = {
-            "pass": hashed_pwd, "rol": rol_inicial, "banned": False,
-            "pregunta": pregunta, "resp_hash": hashed_resp      
+        if len(usuarios_cache) == 0:
+            rol_inicial = "admin"
+        
+        usuarios_cache[user] = {
+            "pass": hashed_pwd,
+            "rol": rol_inicial,
+            "banned": False,
+            "pregunta": pregunta,
+            "resp_hash": hashed_resp
         }
-        guardar_usuarios(usuarios)
-        conn.send(f"Registro exitoso. Rol asignado: {rol_inicial.upper()}.".encode("utf-8"))
-        return True 
+        cambios_pendientes["usuarios"] = True
+    
+    conn.send(f"Registro exitoso. Rol asignado: {rol_inicial.upper()}.".encode("utf-8"))
+    return True
 
 def login_verificacion(user, hashed_pwd):
-    usuarios = cargar_usuarios()
-    if user in usuarios:
-        datos = usuarios[user]
-        if datos["pass"] == hashed_pwd:
-            if datos.get("banned", False): return "BANNED"
-            return datos.get("rol", "estudiante")
+    """Verifica credenciales contra el caché"""
+    with cache_lock:
+        if user in usuarios_cache:
+            datos = usuarios_cache[user]
+            if datos["pass"] == hashed_pwd:
+                if datos.get("banned", False):
+                    return "BANNED"
+                return datos.get("rol", "estudiante")
     return None
 
 # --- Comandos ---
@@ -211,18 +364,14 @@ def procesar_comando(conn, mensaje, alias, rol, sala_actual):
     es_staff = (rol == "admin" or rol == "docente")
     es_admin = (rol == "admin")
 
-    # [NUEVO] COMANDO IA /resume
     if comando == "/resume":
         enviar_privado(conn, "🤖 La IA está leyendo el historial... esto puede tardar unos segundos.")
-        # Se ejecuta en el hilo del cliente, está bien para este uso
         resumen = generar_resumen_ollama(sala_actual)
-        
         enviar_privado(conn, f"\n✨ --- RESUMEN IA ({sala_actual}) --- ✨\n")
         enviar_privado(conn, resumen)
         enviar_privado(conn, "\n----------------------------------------\n")
         return True
 
-    # CREAR SALA
     if comando == "/crear":
         if not es_admin:
             enviar_privado(conn, "[ERROR] Solo Admin.")
@@ -235,12 +384,19 @@ def procesar_comando(conn, mensaje, alias, rol, sala_actual):
             enviar_privado(conn, "❌ La sala ya existe.")
             return True
         salas[nombre_sala] = []
-        guardar_nombres_salas(list(salas.keys()))
+        with cache_lock:
+            salas_nombres_cache.append(nombre_sala)
+            if nombre_sala not in pines_cache:
+                pines_cache[nombre_sala] = ""
+            if nombre_sala not in historial_cache:
+                historial_cache[nombre_sala] = []
+            cambios_pendientes["salas"] = True
+            cambios_pendientes["pines"] = True
+            cambios_pendientes["historial"] = True
         broadcast_lista_salas()
         enviar_privado(conn, f"✅ Sala '{nombre_sala}' creada.")
         return True
 
-    # BORRAR SALA
     if comando == "/borrar":
         if not es_admin:
             enviar_privado(conn, "[ERROR] Solo Admin.")
@@ -253,7 +409,8 @@ def procesar_comando(conn, mensaje, alias, rol, sala_actual):
             enviar_privado(conn, "⚠️ No puedes borrar la última sala.")
             return True
         sala_destino = list(salas.keys())[0]
-        if sala_destino == nombre_sala: sala_destino = list(salas.keys())[1]
+        if sala_destino == nombre_sala:
+            sala_destino = list(salas.keys())[1]
         
         usuarios_afectados = list(salas[nombre_sala])
         for c in usuarios_afectados:
@@ -263,28 +420,39 @@ def procesar_comando(conn, mensaje, alias, rol, sala_actual):
             enviar_privado(c, f"⚠️ La sala actual fue eliminada. Movido a {sala_destino}.")
             enviar_historial_a_usuario(c, sala_destino)
         del salas[nombre_sala]
-        guardar_nombres_salas(list(salas.keys()))
+        with cache_lock:
+            salas_nombres_cache.remove(nombre_sala)
+            if nombre_sala in pines_cache:
+                del pines_cache[nombre_sala]
+            if nombre_sala in historial_cache:
+                del historial_cache[nombre_sala]
+            cambios_pendientes["salas"] = True
+            cambios_pendientes["pines"] = True
+            cambios_pendientes["historial"] = True
         broadcast_lista_salas()
         enviar_privado(conn, f"✅ Sala '{nombre_sala}' eliminada.")
         return True
 
-    # VER MIEMBROS
     if comando == "/get_users":
         lista_equipos = {s: [] for s in salas.keys()}
         for c, datos in clientes.items():
             s_u = datos["sala"]
             if s_u in lista_equipos:
                 info = f"{datos['alias']}"
-                if datos['rol'] != "estudiante": info += f" [{datos['rol'].upper()}]"
-                if datos['muted']: info += " 🔇"
+                if datos['rol'] != "estudiante":
+                    info += f" [{datos['rol'].upper()}]"
+                if datos['muted']:
+                    info += " 🔇"
                 lista_equipos[s_u].append(info)
         enviar_privado(conn, f"USERS_LIST:{json.dumps(lista_equipos)}")
         return True
 
     if comando == "/help":
         ayuda = "--- AYUDA ---\n/mirol, /join [sala], /resume (IA)"
-        if es_staff: ayuda += "\n(STAFF) /kick, /mute, /unmute, /anuncio, /pin"
-        if es_admin: ayuda += "\n(ADMIN) /crear [nombre], /borrar [nombre], /promote, /ban"
+        if es_staff:
+            ayuda += "\n(STAFF) /kick, /mute, /unmute, /anuncio, /pin"
+        if es_admin:
+            ayuda += "\n(ADMIN) /crear [nombre], /borrar [nombre], /promote, /ban"
         enviar_privado(conn, ayuda)
         return True
 
@@ -295,22 +463,27 @@ def procesar_comando(conn, mensaje, alias, rol, sala_actual):
     if comando == "/join":
         nueva_sala = " ".join(partes[1:]) if len(partes) > 1 else ""
         if nueva_sala in salas:
-            if conn in salas[sala_actual]: salas[sala_actual].remove(conn)
+            if conn in salas[sala_actual]:
+                salas[sala_actual].remove(conn)
             salas[nueva_sala].append(conn)
             clientes[conn]["sala"] = nueva_sala
             enviar_privado(conn, f"[SISTEMA] Entraste a: {nueva_sala}")
             enviar_historial_a_usuario(conn, nueva_sala)
-            pines = cargar_pines()
-            conn.send(f"PIN_UPDATE:{pines.get(nueva_sala, '')}".encode("utf-8"))
-        else: enviar_privado(conn, f"[SISTEMA] Sala no existe.")
+            with cache_lock:
+                pin = pines_cache.get(nueva_sala, "")
+            conn.send(f"PIN_UPDATE:{pin}".encode("utf-8"))
+        else:
+            enviar_privado(conn, f"[SISTEMA] Sala no existe.")
         return True
 
     if comando == "/pin":
-        if not es_staff: return True
+        if not es_staff:
+            return True
         texto = " ".join(partes[1:])
-        if not texto: return True
-        pines = cargar_pines()
-        actual = pines.get(sala_actual, "")
+        if not texto:
+            return True
+        with cache_lock:
+            actual = pines_cache.get(sala_actual, "")
         if actual:
             clientes[conn]["pending_pin"] = texto
             enviar_privado(conn, f"⚠️ Ya existe pin. ¿Sobrescribir? (y/n)")
@@ -322,16 +495,19 @@ def procesar_comando(conn, mensaje, alias, rol, sala_actual):
             return True
 
     if comando == "/anuncio":
-        if not es_staff: return True
+        if not es_staff:
+            return True
         broadcast(sala_actual, f"\n📢 [ANUNCIO] 📢\n{' '.join(partes[1:])}\n")
         return True
 
     if comando == "/kick":
-        if not es_staff: return True
+        if not es_staff:
+            return True
         target = partes[1].lower() if len(partes) > 1 else ""
         for s, d in list(clientes.items()):
             if d["alias"].lower() == target:
-                if d["rol"] == "admin": return True
+                if d["rol"] == "admin":
+                    return True
                 enviar_privado(s, "🚫 Expulsado.")
                 remover_cliente(s)
                 enviar_privado(conn, f"✅ {target} expulsado.")
@@ -339,11 +515,14 @@ def procesar_comando(conn, mensaje, alias, rol, sala_actual):
         return True
 
     if comando == "/ban":
-        if not es_staff: return True
+        if not es_staff:
+            return True
         target = partes[1] if len(partes) > 1 else ""
-        usrs = cargar_usuarios()
+        with cache_lock:
+            usrs = usuarios_cache.copy()
         if target in usrs:
-            if usrs[target]["rol"] == "admin": return True
+            if usrs[target]["rol"] == "admin":
+                return True
             usrs[target]["banned"] = True
             guardar_usuarios(usrs)
             for s, d in list(clientes.items()):
@@ -354,9 +533,11 @@ def procesar_comando(conn, mensaje, alias, rol, sala_actual):
         return True
 
     if comando == "/unban":
-        if not es_admin: return True
+        if not es_admin:
+            return True
         target = partes[1] if len(partes) > 1 else ""
-        usrs = cargar_usuarios()
+        with cache_lock:
+            usrs = usuarios_cache.copy()
         if target in usrs:
             usrs[target]["banned"] = False
             guardar_usuarios(usrs)
@@ -364,7 +545,8 @@ def procesar_comando(conn, mensaje, alias, rol, sala_actual):
         return True
     
     if comando == "/mute":
-        if not es_staff: return True
+        if not es_staff:
+            return True
         target = partes[1].lower() if len(partes) > 1 else ""
         for s, d in clientes.items():
             if d["alias"].lower() == target:
@@ -375,7 +557,8 @@ def procesar_comando(conn, mensaje, alias, rol, sala_actual):
         return True
 
     if comando == "/unmute":
-        if not es_staff: return True
+        if not es_staff:
+            return True
         target = partes[1].lower() if len(partes) > 1 else ""
         for s, d in clientes.items():
             if d["alias"].lower() == target:
@@ -386,10 +569,13 @@ def procesar_comando(conn, mensaje, alias, rol, sala_actual):
         return True
 
     if comando == "/promote":
-        if not es_admin: return True
-        if len(partes) < 3: return True
+        if not es_admin:
+            return True
+        if len(partes) < 3:
+            return True
         target, n_rol = partes[1], partes[2].lower()
-        usrs = cargar_usuarios()
+        with cache_lock:
+            usrs = usuarios_cache.copy()
         if target in usrs and n_rol in ["admin", "docente", "estudiante"]:
             usrs[target]["rol"] = n_rol
             guardar_usuarios(usrs)
@@ -408,7 +594,7 @@ def manejar_cliente(conn, addr):
     print(f"🔒 [CONEXIÓN] {addr}")
     try:
         opcion = conn.recv(1024).decode("utf-8").lower().strip()
-        if opcion == "l": 
+        if opcion == "l":
             conn.send("ACK".encode())
             user = conn.recv(1024).decode().strip()
             conn.send("ACK".encode())
@@ -421,32 +607,32 @@ def manejar_cliente(conn, addr):
             elif rol:
                 conn.send(f"Bienvenido {user} [{rol.upper()}]".encode())
                 
-                # Asignar a la primera sala disponible
                 sala_inicial = list(salas.keys())[0]
                 clientes[conn] = {"alias": user, "sala": sala_inicial, "rol": rol, "muted": False, "pending_pin": None}
                 salas[sala_inicial].append(conn)
                 
                 broadcast(sala_inicial, f"[SISTEMA] {user} entró.", conn)
                 
-                # 1. Enviar Lista de Salas
                 json_salas = json.dumps(list(salas.keys()))
                 conn.send(f"ROOMS_UPDATE:{json_salas}".encode("utf-8"))
                 
-                # 2. Historial y Pin
                 enviar_historial_a_usuario(conn, sala_inicial)
-                pines = cargar_pines()
-                conn.send(f"PIN_UPDATE:{pines.get(sala_inicial, '')}".encode("utf-8"))
+                with cache_lock:
+                    pin = pines_cache.get(sala_inicial, "")
+                conn.send(f"PIN_UPDATE:{pin}".encode("utf-8"))
 
                 while True:
                     data = conn.recv(1024).decode().strip()
-                    if not data: break
+                    if not data:
+                        break
                     
                     if clientes[conn].get("pending_pin"):
                         if data.lower() in ["y", "s", "si"]:
                             guardar_pin(clientes[conn]["sala"], clientes[conn]["pending_pin"])
                             broadcast_pin(clientes[conn]["sala"], clientes[conn]["pending_pin"])
                             enviar_privado(conn, "✅ Actualizado.")
-                        else: enviar_privado(conn, "❌ Cancelado.")
+                        else:
+                            enviar_privado(conn, "❌ Cancelado.")
                         clientes[conn]["pending_pin"] = None
                         continue
 
@@ -459,37 +645,62 @@ def manejar_cliente(conn, addr):
                         procesar_comando(conn, data, user, rol, sala_previa)
                     else:
                         prefijo = ""
-                        if rol == "admin": prefijo = "👑 [ADMIN] "
-                        elif rol == "docente": prefijo = "🎓 [DOCENTE] "
+                        if rol == "admin":
+                            prefijo = "👑 [ADMIN] "
+                        elif rol == "docente":
+                            prefijo = "🎓 [DOCENTE] "
                         broadcast(clientes[conn]["sala"], f"{prefijo}{user}: {data}", conn)
                 return
             else:
-                conn.send("Error credenciales.".encode()); return
+                conn.send("Error credenciales.".encode())
+                return
         
         elif opcion == "r":
-            conn.send("ACK".encode()); u = conn.recv(1024).decode().strip()
-            conn.send("ACK".encode()); p = conn.recv(1024).decode().strip()
-            conn.send("ACK".encode()); q = conn.recv(1024).decode().strip()
-            conn.send("ACK".encode()); r = conn.recv(1024).decode().strip().lower()
+            conn.send("ACK".encode())
+            u = conn.recv(1024).decode().strip()
+            conn.send("ACK".encode())
+            p = conn.recv(1024).decode().strip()
+            conn.send("ACK".encode())
+            q = conn.recv(1024).decode().strip()
+            conn.send("ACK".encode())
+            r = conn.recv(1024).decode().strip().lower()
             registrar_usuario(conn, u, hashlib.sha256(p.encode()).hexdigest(), q, hashlib.sha256(r.encode()).hexdigest())
         elif opcion == "rec_req":
-            conn.send("ACK".encode()); u = conn.recv(1024).decode().strip()
-            us = cargar_usuarios()
-            conn.send(f"PREGUNTA:{us[u]['pregunta']}".encode() if u in us else "ERROR".encode())
+            conn.send("ACK".encode())
+            u = conn.recv(1024).decode().strip()
+            with cache_lock:
+                usrs = usuarios_cache.copy()
+            conn.send(f"PREGUNTA:{usrs[u]['pregunta']}".encode() if u in usrs else "ERROR".encode())
         elif opcion == "rec_reset":
-            conn.send("ACK".encode()); u = conn.recv(1024).decode().strip()
-            conn.send("ACK".encode()); r = conn.recv(1024).decode().strip().lower()
-            conn.send("ACK".encode()); np = conn.recv(1024).decode().strip()
-            us = cargar_usuarios()
-            if u in us and us[u]["resp_hash"] == hashlib.sha256(r.encode()).hexdigest():
-                us[u]["pass"] = hashlib.sha256(np.encode()).hexdigest()
-                guardar_usuarios(us); conn.send("EXITO".encode())
-            else: conn.send("ERROR".encode())
-    except: pass
-    finally: remover_cliente(conn)
+            conn.send("ACK".encode())
+            u = conn.recv(1024).decode().strip()
+            conn.send("ACK".encode())
+            r = conn.recv(1024).decode().strip().lower()
+            conn.send("ACK".encode())
+            np = conn.recv(1024).decode().strip()
+            with cache_lock:
+                usrs = usuarios_cache.copy()
+            if u in usrs and usrs[u]["resp_hash"] == hashlib.sha256(r.encode()).hexdigest():
+                usrs[u]["pass"] = hashlib.sha256(np.encode()).hexdigest()
+                guardar_usuarios(usrs)
+                conn.send("EXITO".encode())
+            else:
+                conn.send("ERROR".encode())
+    except:
+        pass
+    finally:
+        remover_cliente(conn)
 
 def main():
-    # [NUEVO] Verificación de IA
+    # Inicializar caché en memoria
+    inicializar_cache()
+    
+    # Iniciar hilo autosave
+    autosave_thread = threading.Thread(target=hilo_autosave, daemon=True)
+    autosave_thread.start()
+    print("💾 [AUTOSAVE] Hilo de guardado automático iniciado.")
+    
+    # Verificación de IA
     try:
         requests.get("http://localhost:11434")
         print("🤖 [IA] Ollama detectado y listo.")
@@ -503,13 +714,28 @@ def main():
     except:
         print("❌ Error SSL: No se encuentran las llaves. El servidor no iniciará.")
         return
+    
     s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    s.bind(("192.168.100.37", 5000))
+    s.bind(("192.168.1.110", 5000))
     s.listen(5)
     print("📌 [SERVIDOR COMPLETO] Listo en puerto 5000.")
-    while True:
-        c, a = s.accept()
-        threading.Thread(target=manejar_cliente, args=(ctx.wrap_socket(c, server_side=True), a), daemon=True).start()
+    
+    try:
+        while True:
+            c, a = s.accept()
+            threading.Thread(target=manejar_cliente, args=(ctx.wrap_socket(c, server_side=True), a), daemon=True).start()
+    except KeyboardInterrupt:
+        print("\n⚠️ Guardando cambios pendientes antes de cerrar...")
+        with cache_lock:
+            if cambios_pendientes["usuarios"]:
+                guardar_cache_usuarios()
+            if cambios_pendientes["historial"]:
+                guardar_cache_historial()
+            if cambios_pendientes["pines"]:
+                guardar_cache_pines()
+            if cambios_pendientes["salas"]:
+                guardar_cache_salas()
+        print("✅ Servidor cerrado correctamente.")
 
 if __name__ == "__main__":
     main()
