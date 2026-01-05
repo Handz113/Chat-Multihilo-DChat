@@ -219,7 +219,8 @@ class ChatApp(CTk):
         if m:
             if self.network_manager.send_msg(m):
                 self.chat_area.configure(state="normal")
-                self.chat_area.insert(tk.END, f"{self.alias}: ", "alias"); self.chat_area.insert(tk.END, f"{m}\n")
+                self.chat_area.insert(tk.END, f"{self.alias}: ", "alias")
+                self.chat_area.insert(tk.END, f"{m}\n\n") 
                 self.chat_area.configure(state="disabled"); self.chat_area.see(tk.END)
             self.msg_entry.delete(0, tk.END)
 
@@ -288,7 +289,7 @@ class ChatApp(CTk):
                                 # Construir string con todos los mensajes
                                 contenido = ""
                                 for m in mensajes:
-                                    contenido += m + "\n"
+                                    contenido += m + "\n\n"
                                 
                                 # Insertar todo de una vez
                                 self.chat_area.insert(tk.END, contenido)
@@ -315,10 +316,10 @@ class ChatApp(CTk):
                     if msg.startswith("[SISTEMA]"): self.chat_area.insert(tk.END, msg + "\n", "sistema")
                     elif ":" in msg:
                         p = msg.split(":", 1)
-                        if len(p)==2 and p[0] != self.alias: self.chat_area.insert(tk.END, f"{p[0]}:", "alias"); self.chat_area.insert(tk.END, f"{p[1]}\n")
+                        if len(p)==2 and p[0] != self.alias: self.chat_area.insert(tk.END, f"{p[0]}:", "alias"); self.chat_area.insert(tk.END, f"{p[1]}\n\n")
                         elif len(p)==2 and p[0] == self.alias: pass 
-                        else: self.chat_area.insert(tk.END, msg + "\n")
-                    else: self.chat_area.insert(tk.END, msg + "\n")
+                        else: self.chat_area.insert(tk.END, msg + "\n\n")
+                    else: self.chat_area.insert(tk.END, msg + "\n\n")
                     self.chat_area.configure(state="disabled"); self.chat_area.see(tk.END)
         finally:
             self.after(100, self.procesar_cola)
